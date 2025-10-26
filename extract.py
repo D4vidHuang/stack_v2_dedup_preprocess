@@ -1,4 +1,5 @@
 import os
+import argparse
 import boto3
 import json
 import datetime
@@ -30,51 +31,86 @@ def download_contents(blob_id, src_encoding):
     
     return {"content": content}
 
-# --- 1. 从Hugging Face下载元数据和代码内容 ---
-def fetch_python_samples(output_file="python_samples.jsonl"):
-    dataset_name = "bigcode/the-stack-v2-dedup"
-    subset_name = "Python"
-    num_samples_to_save = 100
-    
-    print(f"正在从 '{dataset_name}' (子集: {subset_name}) 加载数据流...")
-    
-    ds = load_dataset(dataset_name, subset_name, split="train", streaming=True)
-    
+# 语言与子集名称映射（与 Hugging Face 数据集一致）
+LANGUAGE_CONFIG = {
+    "python":     "Python",
+    "javascript": "JavaScript",
+    "typescript": "TypeScript",
+    "java":       "Java",
+    "c":          "C",
+    "cpp":        "C++",
+    "csharp":     "C-Sharp",
+    "go":         "Go",
+    "ruby":       "Ruby",
+    "rust":       "Rust",
+    "scala":      "Scala",
+}
+
+# 语言与文件扩展名映射
+EXTENSION_MAP = {
+    "python": ".py",
+    "javascript": ".js",
+    "typescript": ".ts",
+    "java": ".java",
+    "c": ".c",
+    "cpp": ".cpp",
+    "csharp": ".cs",
+    "go": ".go",
+    "ruby": ".rb",
+    "rust": ".rs",
+    "scala": ".scala",
+}
+
+DATASET_NAME = "bigcode/the-stack-v2-dedup"
+
+# --- 1. 从 Hugging Face 下载元数据和代码内容（通用） ---
+def fetch_samples(language_key: str, output_file: str, num_samples_to_save: int = 1000):
+    if language_key not in LANGUAGE_CONFIG:
+        raise ValueError(f"不支持的语言: {language_key}. 可选: {list(LANGUAGE_CONFIG.keys())}")
+
+    subset_name = LANGUAGE_CONFIG[language_key]
+    print(f"正在从 '{DATASET_NAME}' (子集: {subset_name}) 加载数据流...")
+
+    ds = load_dataset(DATASET_NAME, subset_name, split="train", streaming=True)
+
     saved_count = 0
-    
+
     with open(output_file, "w", encoding="utf-8") as f_out:
         for row in ds:
             if saved_count >= num_samples_to_save:
                 print(f"\n已成功保存 {num_samples_to_save} 个样本到 {output_file}。")
                 break
-            
+
             try:
-                print(f"\r正在处理第 {saved_count + 1}/{num_samples_to_save} 个... "
-                      f"Repo: {row['repo_name']}, Path: {row['path']}", end="")
-                
+                print(
+                    f"\r正在处理第 {saved_count + 1}/{num_samples_to_save} 个... "
+                    f"Repo: {row['repo_name']}, Path: {row['path']}",
+                    end="",
+                )
+
                 # 下载实际的文件内容
                 content_data = download_contents(row["blob_id"], row["src_encoding"])
-                
+
                 # 将下载到的内容添加到原始 'row' 字典中
                 row["content"] = content_data["content"]
-                
+
                 # --- 错误修复：转换 datetime ---
                 timestamp_keys = [
-                    "visit_date", 
-                    "revision_date", 
-                    "committer_date", 
-                    "gha_event_created_at", 
-                    "gha_created_at"
+                    "visit_date",
+                    "revision_date",
+                    "committer_date",
+                    "gha_event_created_at",
+                    "gha_created_at",
                 ]
-                
+
                 for key in timestamp_keys:
                     if key in row and isinstance(row[key], datetime.datetime):
                         row[key] = row[key].isoformat()
                 # --- 修复结束 ---
-                
+
                 f_out.write(json.dumps(row) + "\n")
                 saved_count += 1
-                
+
             except Exception as e:
                 print(f"\n跳过文件 {row['blob_id']}，原因: {e}")
                 continue
@@ -83,11 +119,15 @@ def fetch_python_samples(output_file="python_samples.jsonl"):
 
 
 # --- 2. (新功能) 将代码提取到单独的文件 ---
-def extract_code_to_files(input_file="python_samples.jsonl", output_dir="python_code_output"):
+def extract_code_to_files(input_file: str, output_dir: str, language_key: str):
     """
-    读取 .jsonl 文件，并将每行中的 'content' 字段保存为单独的 .py 文件。
+    读取 .jsonl 文件，并将每行中的 'content' 字段保存为单独的代码文件（按语言扩展名）。
     """
-    print(f"\n开始从 {input_file} 提取代码到文件夹 {output_dir}...")
+    if language_key not in EXTENSION_MAP:
+        raise ValueError(f"不支持的语言: {language_key}. 可选: {list(EXTENSION_MAP.keys())}")
+
+    file_ext = EXTENSION_MAP[language_key]
+    print(f"\n开始从 {input_file} 提取代码到文件夹 {output_dir}，文件扩展名: {file_ext} ...")
     
     # 1. 创建输出文件夹（如果它不存在）
     if not os.path.exists(output_dir):
@@ -96,7 +136,7 @@ def extract_code_to_files(input_file="python_samples.jsonl", output_dir="python_
         
     # 2. 检查输入的 jsonl 文件是否存在
     if not os.path.exists(input_file):
-        print(f"错误：找不到输入文件 {input_file}。请先运行 fetch_python_samples()。")
+        print(f"错误：找不到输入文件 {input_file}。请先运行下载步骤。")
         return
 
     # 3. 逐行读取 jsonl 文件
@@ -116,9 +156,8 @@ def extract_code_to_files(input_file="python_samples.jsonl", output_dir="python_
                         print(f"跳过一行，缺少 'content' 或 'blob_id'。")
                         continue
                         
-                    # 构
-                    # 建输出文件名
-                    filename = f"{blob_id}.py"
+                    # 构建输出文件名
+                    filename = f"{blob_id}{file_ext}"
                     output_path = os.path.join(output_dir, filename)
                     
                     # 4. 将代码内容写入 .py 文件
@@ -133,7 +172,7 @@ def extract_code_to_files(input_file="python_samples.jsonl", output_dir="python_
                 except Exception as e:
                     print(f"\n写入文件时出错: {e}")
 
-            print(f"\n\n提取完成！总共 {count} 个 Python 文件已保存到 {output_dir} 文件夹。")
+            print(f"\n\n提取完成！总共 {count} 个 {language_key} 文件已保存到 {output_dir} 文件夹。")
 
     except FileNotFoundError:
         print(f"错误：无法打开文件 {input_file}。")
@@ -141,13 +180,37 @@ def extract_code_to_files(input_file="python_samples.jsonl", output_dir="python_
 
 # --- 主执行 ---
 if __name__ == "__main__":
-    
-    # 定义文件名
-    jsonl_filename = "python_samples.jsonl"
-    code_output_directory = "python_code_output"
-    
+    parser = argparse.ArgumentParser(description="从 The Stack v2（去重）按语言抽取样本并导出代码文件")
+    parser.add_argument(
+        "language",
+        choices=list(LANGUAGE_CONFIG.keys()),
+        help=f"指定语言（可选: {', '.join(LANGUAGE_CONFIG.keys())}）",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=1000,
+        help="要下载的样本数量（默认: 100）",
+    )
+    parser.add_argument(
+        "--jsonl",
+        type=str,
+        help="输出的 .jsonl 文件名（默认: <language>_samples.jsonl）",
+    )
+    parser.add_argument(
+        "--outdir",
+        type=str,
+        help="代码导出的目录（默认: <language>_code_output）",
+    )
+
+    args = parser.parse_args()
+
+    language_key = args.language
+    jsonl_filename = args.jsonl if args.jsonl else f"{language_key}_samples.jsonl"
+    code_output_directory = args.outdir if args.outdir else f"{language_key}_code_output"
+
     # 步骤 1: 下载数据并保存为 .jsonl
-    fetch_python_samples(output_file=jsonl_filename)
-    
-    # 步骤 2: 从 .jsonl 文件提取代码为 .py 文件
-    extract_code_to_files(input_file=jsonl_filename, output_dir=code_output_directory)
+    fetch_samples(language_key=language_key, output_file=jsonl_filename, num_samples_to_save=args.count)
+
+    # 步骤 2: 从 .jsonl 文件提取代码为对应扩展名的代码文件
+    extract_code_to_files(input_file=jsonl_filename, output_dir=code_output_directory, language_key=language_key)

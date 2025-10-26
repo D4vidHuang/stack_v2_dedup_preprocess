@@ -1,0 +1,45 @@
+# OS / Editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.code-workspace
+
+# Python build/cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Downloaded datasets and generated artifacts
+# JSONL samples
+*_samples.jsonl
+*_aise_samples.jsonl
+*.jsonl
+
+# Extracted code outputs (per-language)
+*_code_output/
+*aise_code_output/
+python_code_small/
+
+# Local dataset/cache directories (if created)
+datasets/
+hf_cache/
+.cache/
+
+# Logs
+logs/
+*.log
+
+# Env files
+.env
+.env.*
+
